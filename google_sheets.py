@@ -1,7 +1,7 @@
+import streamlit as st
 import gspread
 import pandas as pd
 from google.oauth2.service_account import Credentials
-
 
 
 SCOPE = [
@@ -12,8 +12,8 @@ SCOPE = [
 
 def connect():
 
-    creds = Credentials.from_service_account_file(
-        "raich-fitness-challenge-4643fe25f371.json",
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
         scopes=SCOPE
     )
 
