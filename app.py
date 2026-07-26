@@ -1,13 +1,42 @@
+from google_sheets import load_sheet, save_sheet
+
 import streamlit as st
 import pandas as pd
 import os
-from datetime import date
+from datetime import date, timedelta
 
-st.set_page_config(page_title="Family Fitness Challenge", layout="wide")
+
+# =====================================================
+# PAGE SETUP
+# =====================================================
+
+st.set_page_config(
+    page_title="Raich Family Fitness Challenge",
+    page_icon="🏆",
+    layout="wide"
+)
+if "checkin_person" not in st.session_state:
+    st.session_state.checkin_person = "Julia"
 
 st.title("🏆 Raich Family Fitness Challenge")
+st.caption("July 27, 2026 – October 18, 2026")
 
-# ---------------- FAMILY ----------------
+
+# =====================================================
+# CHALLENGE SETTINGS
+# =====================================================
+
+CHALLENGE_START = pd.Timestamp("2026-07-27")
+CHALLENGE_WEEKS = 12
+FAMILY_GOAL = 5_000_000
+
+DATA_FILE = "data.csv"
+
+
+# =====================================================
+# FAMILY
+# =====================================================
+
 family = {
     "Julia": "👩",
     "Dad": "👨",
@@ -15,190 +44,1071 @@ family = {
     "Emma": "👧",
     "Grace": "👧",
     "Larry": "👨",
-    "Aunt Melissa": "🧑",
     "Uncle Buck": "🧑",
-    "Baba": "👩"
+    "Uncle Matt": "👨",
+    "Aunt Melissa": "👩",
+    "Aunt Amanda": "👩",
+    "Seraphina": "👧",
+    "Baba": "👵"
 }
 
-# ---------------- INPUT ----------------
-st.header("Daily Check-In")
 
-person = st.selectbox("Who are you?", list(family.keys()))
-st.write("Hello,", person, family[person])
+# =====================================================
+# DATA FUNCTIONS
+# =====================================================
 
-today = st.date_input("Today's Date", value=date.today())
+def load_data():
 
-activity_type = st.radio("Tracking Type", ["Steps", "Exercise Minutes"])
+    columns = [
+        "Date",
+        "Person",
+        "Type",
+        "Amount",
+        "Week"
+    ]
 
-activity = st.number_input(
-    "Amount",
-    min_value=0,
-    step=100 if activity_type == "Steps" else 5
-)
+    if os.path.exists(DATA_FILE) and os.path.getsize(DATA_FILE) > 0:
+        df = pd.read_csv(DATA_FILE)
 
-filename = "data.csv"
-
-# ---------------- LOAD DATA ----------------
-def load_data(filename):
-    if os.path.exists(filename) and os.path.getsize(filename) > 0:
-        df = pd.read_csv(filename)
     else:
-        df = pd.DataFrame(columns=["Date", "Person", "Type", "Amount"])
+        df = pd.DataFrame(columns=columns)
 
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+    df["Date"] = pd.to_datetime(
+        df["Date"],
+        errors="coerce"
+    )
+
+
+    df = df.dropna(
+        subset=["Date"]
+    )
+
+
+    if len(df) > 0:
+
+        df["Week"] = (
+            (
+                df["Date"] - CHALLENGE_START
+            ).dt.days // 7
+        ) + 1
+
+        df["Week"] = (
+            df["Week"]
+            .clip(1, CHALLENGE_WEEKS)
+            .astype(int)
+        )
+
+    else:
+
+        df["Week"] = pd.Series(
+            dtype="int"
+        )
+
+
     return df
 
-df = load_data(filename)
 
-# ---------------- SUBMIT ----------------
-if st.button("Submit 🚀"):
-    new_row = pd.DataFrame([{
-        "Date": pd.to_datetime(today),
-        "Person": person,
-        "Type": activity_type,
-        "Amount": activity
-    }])
 
-    df = pd.concat([df, new_row], ignore_index=True)
-    df.to_csv(filename, index=False)
+# =====================================================
+# CALCULATION FUNCTIONS
+# =====================================================
 
-    st.success("Saved!")
-    st.rerun()
+def get_steps(df):
 
-# =========================================================
-# 🔒 PERSON FILTER (CORE OF APP)
-# =========================================================
-person_df = df[df["Person"] == person].copy()
-person_steps = person_df[person_df["Type"] == "Steps"].copy()
+    return df[
+        df["Type"] == "Steps"
+    ]
 
-# =========================================================
-# 📊 TABS (REAL APP STRUCTURE)
-# =========================================================
-tab1, tab2, tab3 = st.tabs(["📋 My Dashboard", "🏆 Leaderboard", "📊 Insights"])
 
-# =========================================================
-# 📋 TAB 1 — PERSONAL DASHBOARD
-# =========================================================
-with tab1:
-    st.header(f"📋 {person}'s Dashboard")
 
-    st.dataframe(person_df.sort_values("Date", ascending=False))
+def get_exercise(df):
 
-    total_steps = person_steps["Amount"].sum()
-    total_minutes = person_df[person_df["Type"] == "Exercise Minutes"]["Amount"].sum()
+    return df[
+        df["Type"] == "Exercise Minutes"
+    ]
 
-    col1, col2 = st.columns(2)
-    col1.metric("Total Steps", int(total_steps))
-    col2.metric("Exercise Minutes", int(total_minutes))
 
-    # ⭐ TOP 5 AVERAGE
-    st.subheader("⭐ Top 5 Day Average (Steps)")
 
-    if len(person_steps) > 0:
-        daily = person_steps.groupby("Date")["Amount"].sum()
-        top5_avg = daily.sort_values(ascending=False).head(5).mean()
+def family_total_steps(df):
+
+    return int(
+        get_steps(df)["Amount"].sum()
+    )
+
+
+
+def current_week():
+
+    week = (
+        (
+            pd.Timestamp.today()
+            - CHALLENGE_START
+        ).days // 7
+    ) + 1
+
+    return min(
+        max(week, 1),
+        CHALLENGE_WEEKS
+    )
+
+
+
+def today_checkins(df):
+
+    today = pd.Timestamp(
+        date.today()
+    )
+
+    return df[
+        df["Date"] == today
+    ]["Person"].nunique()
+
+
+
+def calculate_current_streak(person_df):
+
+    if len(person_df) == 0:
+        return 0
+
+    dates = sorted(
+        person_df["Date"]
+        .dt.date
+        .unique()
+    )
+
+    if len(dates) == 0:
+        return 0
+
+
+    streak = 1
+
+    for i in range(
+        len(dates)-1,
+        0,
+        -1
+    ):
+
+        if (
+            dates[i]
+            -
+            dates[i-1]
+        ).days == 1:
+
+            streak += 1
+
+        else:
+            break
+
+
+    if (
+        dates[-1] != date.today()
+        and
+        dates[-1] != date.today() - timedelta(days=1)
+    ):
+        return 0
+
+
+    return streak
+
+
+
+def calculate_longest_streak(person_df):
+
+    if len(person_df) == 0:
+        return 0
+
+    dates = sorted(
+        person_df["Date"]
+        .dt.date
+        .unique()
+    )
+
+    longest = 1
+    current = 1
+
+
+    for i in range(1, len(dates)):
+
+        if (
+            dates[i]
+            -
+            dates[i-1]
+        ).days == 1:
+
+            current += 1
+            longest = max(
+                longest,
+                current
+            )
+
+        else:
+
+            current = 1
+
+
+    return longest
+
+
+
+# =====================================================
+# LOAD DATA
+# =====================================================
+
+df = load_sheet()
+
+week = current_week()
+
+steps_df = get_steps(df)
+
+exercise_df = get_exercise(df)
+
+
+# =====================================================
+# TABS
+# =====================================================
+
+page = st.radio(
+    "Navigation",
+    [
+        "🏠 Home",
+        "✍️ Check-In",
+        "📋 My Dashboard",
+        "🏆 Leaderboards",
+        "📊 Insights"
+    ],
+    horizontal=True
+)
+
+
+# =====================================================
+# TAB 1 - HOME
+# =====================================================
+
+if page == "🏠 Home":
+
+    st.header(
+        f"Week {week} of {CHALLENGE_WEEKS}"
+    )
+
+    st.subheader(
+        "🏁 Family Goal"
+    )
+
+    total_steps = family_total_steps(df)
+
+    progress = (
+        total_steps
+        /
+        FAMILY_GOAL
+    )
+
+    st.progress(
+        min(progress, 1.0)
+    )
+
+    st.write(
+        f"**{total_steps:,} / {FAMILY_GOAL:,} steps**"
+    )
+
+    remaining = max(
+        FAMILY_GOAL - total_steps,
+        0
+    )
+
+    st.write(
+        f"**{remaining:,} steps remaining**"
+    )
+
+    st.write(
+        f"👣 Today's Check-ins: "
+        f"{today_checkins(df)} / {len(family)}"
+    )
+
+
+    st.divider()
+
+
+    if len(steps_df) > 0:
+
+        weekly = (
+            steps_df[
+                steps_df["Week"] == week
+            ]
+            .groupby("Person")["Amount"]
+            .sum()
+            .sort_values(
+                ascending=False
+            )
+        )
+
+        if len(weekly):
+
+            st.subheader(
+                "👑 Current Weekly Leader"
+            )
+
+            st.success(
+                weekly.index[0]
+            )
+
     else:
-        top5_avg = 0
 
-    st.metric("Top 5 Avg Steps", int(top5_avg))
+        st.info(
+            "Start logging steps tomorrow!"
+        )
 
-    # 🥇 PERSONAL BEST DAY
-    st.subheader("🥇 Personal Best Day")
 
-    if len(person_steps) > 0:
-        daily = person_steps.groupby("Date")["Amount"].sum()
-        best_day = daily.idxmax()
-        best_value = daily.max()
-        st.success(f"{best_day.date()} — {int(best_value)} steps")
+# =====================================================
+# TAB 2 - CHECK-IN
+# =====================================================
+
+elif page == "✍️ Check-In":
+
+    st.header(
+        "✍️ Daily Check-In"
+    )
+
+    person = st.selectbox(
+    "Who are you?",
+    list(family.keys()),
+    key="checkin_person"
+    )
+
+    st.write(
+        f"{family[person]} {person}"
+    )
+
+
+    entry_date = st.date_input(
+        "Date",
+        value=date.today()
+    )
+
+
+    activity_type = st.radio(
+        "Tracking Type",
+        [
+            "Steps",
+            "Exercise Minutes"
+        ],
+        horizontal=True
+    )
+
+
+    if activity_type == "Steps":
+
+        amount = st.number_input(
+            "Steps",
+            min_value=0,
+            step=100
+        )
+
     else:
-        st.info("No step data yet.")
 
-    # 🏅 BADGES
-    st.subheader("🏅 Badges")
+        amount = st.number_input(
+            "Exercise Minutes",
+            min_value=0,
+            step=5
+        )
+
+
+    existing = df[
+        (
+            df["Person"]
+            ==
+            person
+        )
+        &
+        (
+            df["Date"]
+            ==
+            pd.Timestamp(entry_date)
+        )
+        &
+        (
+            df["Type"]
+            ==
+            activity_type
+        )
+    ]
+
+
+    if len(existing) > 0:
+
+        st.warning(
+            "You already entered this activity for this date."
+        )
+
+
+        if st.button(
+            "Update Existing Entry"
+        ):
+
+            index = existing.index[0]
+
+            df.loc[
+                index,
+                "Amount"
+            ] = amount
+
+            save_sheet(df)
+
+            st.success(
+                "Updated!"
+            )
+
+        
+
+
+    else:
+
+
+        if st.button(
+            "Submit 🚀"
+        ):
+            st.write("BUTTON WORKED")
+            new_row = pd.DataFrame(
+                [
+                    {
+                        "Date":
+                            pd.Timestamp(entry_date),
+
+                        "Person":
+                            person,
+
+                        "Type":
+                            activity_type,
+
+                        "Amount":
+                            amount,
+
+                        "Week":
+                            (
+                                (
+                                    pd.Timestamp(entry_date)
+                                    -
+                                    CHALLENGE_START
+                                ).days // 7
+                            ) + 1
+                    }
+                ]
+            )
+
+
+            df = pd.concat(
+                [
+                    df,
+                    new_row
+                ],
+                ignore_index=True
+            )
+
+
+            save_sheet(df)
+
+
+            st.success(
+                "Saved!"
+            )
+
+            
+
+
+
+# =====================================================
+# TAB 3 - DASHBOARD
+# =====================================================
+
+elif page == "📋 My Dashboard":
+
+    st.header(
+        "📋 My Dashboard"
+    )
+
+
+    selected_person = st.selectbox(
+        "Select Person",
+        list(family.keys()),
+        key="dashboard_person"
+    )
+
+
+    person_df = df[
+        df["Person"]
+        ==
+        selected_person
+    ]
+
+
+    person_steps = person_df[
+        person_df["Type"]
+        ==
+        "Steps"
+    ]
+
+
+    person_minutes = person_df[
+        person_df["Type"]
+        ==
+        "Exercise Minutes"
+    ]
+
+
+    col1, col2, col3 = st.columns(3)
+
+
+    col1.metric(
+        "👣 Total Steps",
+        f"{int(person_steps['Amount'].sum()):,}"
+    )
+
+
+    col2.metric(
+        "💪 Exercise Minutes",
+        int(person_minutes["Amount"].sum())
+    )
+
+
+    col3.metric(
+        "🔥 Current Streak",
+        calculate_current_streak(
+            person_df
+        )
+    )
+
+
+    col4, col5 = st.columns(2)
+
+
+    col4.metric(
+        "🏆 Longest Streak",
+        calculate_longest_streak(
+            person_df
+        )
+    )
+
+
+    if len(person_steps):
+
+        daily = (
+            person_steps
+            .groupby("Date")["Amount"]
+            .sum()
+        )
+
+        col5.metric(
+            "🥇 Best Day",
+            f"{int(daily.max()):,}"
+        )
+
+
+    st.divider()
+
+
+    st.subheader(
+        "✏️ Edit My Entries"
+    )
+
+
+    editable = person_df.copy()
+
+
+    if len(editable):
+
+        editable["Date"] = (
+            editable["Date"]
+            .dt.date
+        )
+
+
+        edited = st.data_editor(
+            editable,
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+        if st.button(
+            "💾 Save Changes"
+        ):
+
+            edited["Date"] = pd.to_datetime(
+                edited["Date"]
+            )
+
+            df = df[
+                df["Person"]
+                !=
+                selected_person
+            ]
+
+            df = pd.concat(
+                [
+                    df,
+                    edited
+                ],
+                ignore_index=True
+            )
+
+            save_sheet(df)
+
+            st.success(
+                "Changes saved!"
+            )
+
+
+
+
+    else:
+
+        st.info(
+            "No entries yet."
+        )
+# =====================================================
+# TAB 4 - LEADERBOARDS
+# =====================================================
+
+elif page == "🏆 Leaderboards":
+
+    st.header(
+        "🏆 Leaderboards"
+    )
+
+
+    # -----------------------------
+    # Overall Steps
+    # -----------------------------
+
+    st.subheader(
+        "👣 Overall Steps"
+    )
+
+
+    if len(steps_df):
+
+        overall = (
+            steps_df
+            .groupby("Person")["Amount"]
+            .sum()
+            .sort_values(
+                ascending=False
+            )
+        )
+
+
+        st.bar_chart(
+            overall
+        )
+
+
+        st.dataframe(
+            overall.rename(
+                "Total Steps"
+            ),
+            use_container_width=True
+        )
+
+    else:
+
+        st.info(
+            "No step data yet."
+        )
+
+
+    st.divider()
+
+
+    # -----------------------------
+    # Weekly Top 5 Average
+    # -----------------------------
+
+    st.subheader(
+        f"⭐ Week {week} Top 5 Average"
+    )
+
+
+    week_steps = steps_df[
+        steps_df["Week"]
+        ==
+        week
+    ]
+
+
+    if len(week_steps):
+
+        daily_week = (
+            week_steps
+            .groupby(
+                [
+                    "Person",
+                    "Date"
+                ]
+            )["Amount"]
+            .sum()
+            .reset_index()
+        )
+
+
+        weekly_top5 = (
+            daily_week
+            .groupby("Person")
+            ["Amount"]
+            .apply(
+                lambda x:
+                x.nlargest(5).mean()
+            )
+            .sort_values(
+                ascending=False
+            )
+        )
+
+
+        st.success(
+            f"🥇 Week {week} Champion: "
+            f"{weekly_top5.index[0]}"
+        )
+
+
+        st.bar_chart(
+            weekly_top5
+        )
+
+
+        st.dataframe(
+            weekly_top5.rename(
+                "Top 5 Average"
+            ),
+            use_container_width=True
+        )
+
+
+    else:
+
+        st.info(
+            "No data logged this week."
+        )
+
+
+    st.divider()
+
+
+    # -----------------------------
+    # Exercise Minutes
+    # -----------------------------
+
+    st.subheader(
+        "💪 Exercise Minutes"
+    )
+
+
+    if len(exercise_df):
+
+        exercise_board = (
+            exercise_df
+            .groupby("Person")
+            ["Amount"]
+            .sum()
+            .sort_values(
+                ascending=False
+            )
+        )
+
+
+        st.bar_chart(
+            exercise_board
+        )
+
+
+        st.dataframe(
+            exercise_board.rename(
+                "Minutes"
+            ),
+            use_container_width=True
+        )
+
+
+    else:
+
+        st.info(
+            "No exercise data yet."
+        )
+
+
+
+# =====================================================
+# TAB 5 - INSIGHTS
+# =====================================================
+
+elif page == "📊 Insights":
+
+    st.header(
+        "📊 Insights"
+    )
+
+
+    # -----------------------------
+    # Weekly Comparison
+    # -----------------------------
+
+    st.subheader(
+        "📈 Weekly Family Progress"
+    )
+
+
+    if len(steps_df):
+
+        weekly_family = (
+            steps_df
+            .groupby(
+                [
+                    "Week",
+                    "Person"
+                ]
+            )["Amount"]
+            .sum()
+            .unstack(
+                fill_value=0
+            )
+        )
+
+
+        st.line_chart(
+            weekly_family
+        )
+
+
+    else:
+
+        st.info(
+            "No data yet."
+        )
+
+
+    st.divider()
+
+
+    # -----------------------------
+    # Hall of Fame
+    # -----------------------------
+
+    st.subheader(
+        "🏆 Hall of Fame"
+    )
+
+
+    if len(steps_df):
+
+        daily_records = (
+            steps_df
+            .groupby(
+                [
+                    "Person",
+                    "Date"
+                ]
+            )["Amount"]
+            .sum()
+        )
+
+
+        best_day = (
+            daily_records
+            .idxmax()
+        )
+
+
+        best_value = (
+            daily_records
+            .max()
+        )
+
+
+        st.success(
+            f"🥇 Highest Day: "
+            f"{best_day[0]} "
+            f"({best_day[1].date()}) "
+            f"- {int(best_value):,} steps"
+        )
+
+
+    # Longest streak
+
+    streaks = {}
+
+
+    for member in family:
+
+        member_data = df[
+            df["Person"]
+            ==
+            member
+        ]
+
+        streaks[member] = (
+            calculate_longest_streak(
+                member_data
+            )
+        )
+
+
+    streak_holder = max(
+        streaks,
+        key=streaks.get
+    )
+
+
+    st.success(
+        f"🔥 Longest Streak: "
+        f"{streak_holder} "
+        f"({streaks[streak_holder]} days)"
+    )
+
+
+    st.divider()
+
+
+    # -----------------------------
+    # Badges
+    # -----------------------------
+
+    st.subheader(
+        "🏅 Challenge Badges"
+    )
+
+
+    total_steps = family_total_steps(df)
+
 
     badges = []
 
-    if total_steps >= 100000:
-        badges.append("🔥 100K Club")
-    if total_steps >= 50000:
-        badges.append("🏃 50K Club")
-    if total_steps >= 20000:
-        badges.append("🚶 Active Walker")
 
-    active_days = person_df["Date"].dt.date.nunique()
-    if active_days >= 5:
-        badges.append("📅 Consistent Tracker")
+    if total_steps >= 100000:
+
+        badges.append(
+            "👟 Family 100K Club"
+        )
+
+
+    if total_steps >= 500000:
+
+        badges.append(
+            "🔥 Family Half Million Club"
+        )
+
+
+    if total_steps >= 1000000:
+
+        badges.append(
+            "🚀 One Million Steps"
+        )
+
+
+    if len(steps_df):
+
+        if steps_df["Amount"].max() >= 20000:
+
+            badges.append(
+                "💥 20K Step Day"
+            )
+
 
     if badges:
-        for b in badges:
-            st.write("🏅", b)
-    else:
-        st.write("No badges yet 💪")
 
-    # 🔥 STREAK
-    st.subheader("🔥 Streak")
+        for badge in badges:
 
-    if len(person_df) > 0:
-        dates = sorted(person_df["Date"].dropna().dt.date.unique())
-
-        longest = current = 0
-        last = None
-
-        for d in dates:
-            if last and (d - last).days == 1:
-                current += 1
-            else:
-                current = 1
-
-            longest = max(longest, current)
-            last = d
-
-        st.metric("Longest Streak", longest)
-    else:
-        st.metric("Longest Streak", 0)
-
-    # 📈 CHART
-    st.subheader("📈 Steps Over Time")
-
-    if len(person_steps) > 0:
-        chart = person_steps.groupby("Date")["Amount"].sum().sort_index()
-        st.line_chart(chart)
-    else:
-        st.info("No step data yet.")
-
-# =========================================================
-# 🏆 TAB 2 — LEADERBOARD
-# =========================================================
-with tab2:
-    st.header("🏆 Family Leaderboard (Steps Only)")
-
-    steps_df = df[df["Type"] == "Steps"]
-
-    if len(steps_df) > 0:
-        leaderboard = steps_df.groupby("Person")["Amount"].sum().sort_values(ascending=False)
-
-        st.success(f"👑 Leader: {leaderboard.idxmax()}")
-
-        st.dataframe(leaderboard.rename("Total Steps"))
-
-        st.bar_chart(leaderboard)
-    else:
-        st.info("No step data yet.")
-
-# =========================================================
-# 📊 TAB 3 — INSIGHTS
-# =========================================================
-with tab3:
-    st.header("📊 Insights")
-
-    if len(df) > 0:
-        steps_df = df[df["Type"] == "Steps"]
-
-        top = steps_df.groupby("Person")["Amount"].sum().idxmax()
-        st.info(f"🔥 Most Steps Overall: {top}")
-
-        st.write("Average steps per person:")
-        st.dataframe(steps_df.groupby("Person")["Amount"].mean())
+            st.write(
+                badge
+            )
 
     else:
-        st.info("No data yet.")
+
+        st.info(
+            "Badges coming soon!"
+        )
+
+
+    st.divider()
+
+
+    # -----------------------------
+    # Pace Tracker
+    # -----------------------------
+
+    st.subheader(
+        "🏁 5 Million Step Pace"
+    )
+
+
+    days_elapsed = max(
+        (
+            pd.Timestamp.today()
+            -
+            CHALLENGE_START
+        ).days,
+        1
+    )
+
+
+    average_daily = (
+        total_steps
+        /
+        days_elapsed
+    )
+
+
+    total_days = (
+        CHALLENGE_WEEKS
+        *
+        7
+    )
+
+
+    remaining_days = max(
+        total_days - days_elapsed,
+        1
+    )
+
+
+    needed_daily = (
+        max(
+            FAMILY_GOAL - total_steps,
+            0
+        )
+        /
+        remaining_days
+    )
+
+
+    col1, col2 = st.columns(2)
+
+
+    col1.metric(
+        "Current Daily Average",
+        f"{average_daily:,.0f}"
+    )
+
+
+    col2.metric(
+        "Needed Daily Average",
+        f"{needed_daily:,.0f}"
+    )
+
+
+    if average_daily >= needed_daily:
+
+        st.success(
+            "🎉 Family is on pace for 5 million steps!"
+        )
+
+    else:
+
+        st.warning(
+            "🚶 Family needs a little more movement to stay on pace."
+        )
+
+
+st.divider()
+
+st.caption(
+    "❤️ Built for the Raich Family 12-Week Fitness Challenge"
+)
