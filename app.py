@@ -3,7 +3,8 @@ from google_sheets import load_sheet, save_sheet
 import streamlit as st
 import pandas as pd
 import os
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
+from zoneinfo import ZoneInfo
 
 
 # =====================================================
@@ -31,6 +32,13 @@ CHALLENGE_WEEKS = 12
 FAMILY_GOAL = 5_000_000
 
 DATA_FILE = "data.csv"
+
+# Use Eastern Time so the challenge does not roll over to the next day
+# early when the app is running on a server in a different timezone.
+APP_TIMEZONE = ZoneInfo("America/New_York")
+
+def app_today():
+    return datetime.now(APP_TIMEZONE).date()
 
 
 # =====================================================
@@ -142,7 +150,7 @@ def current_week():
 
     week = (
         (
-            pd.Timestamp.today()
+            pd.Timestamp(app_today())
             - CHALLENGE_START
         ).days // 7
     ) + 1
@@ -157,7 +165,7 @@ def current_week():
 def today_checkins(df):
 
     today = pd.Timestamp(
-        date.today()
+        app_today()
     )
 
     return df[
@@ -202,9 +210,9 @@ def calculate_current_streak(person_df):
 
 
     if (
-        dates[-1] != date.today()
+        dates[-1] != app_today()
         and
-        dates[-1] != date.today() - timedelta(days=1)
+        dates[-1] != app_today() - timedelta(days=1)
     ):
         return 0
 
@@ -382,7 +390,7 @@ elif page == "✍️ Check-In":
 
     entry_date = st.date_input(
         "Date",
-        value=date.today()
+        value=app_today()
     )
 
 
@@ -724,21 +732,37 @@ elif page == "🏆 Leaderboards":
     # -----------------------------
 
     st.subheader(
-        f"⭐ Week {week} Top 5 Average"
+        "⭐ Weekly Top 5 Average"
     )
 
+    # Let the family move backward through completed weeks.
+    week_options = list(range(1, week + 1))
 
-    week_steps = steps_df[
-        steps_df["Week"]
-        ==
-        week
+    selected_week = st.selectbox(
+        "View Week",
+        week_options,
+        index=len(week_options) - 1,
+        format_func=lambda w: (
+            f"Week {w}" + (" (Current)" if w == week else "")
+        )
+    )
+
+    selected_week_steps = steps_df[
+        steps_df["Week"] == selected_week
     ]
 
+    # Start with every family member so people with no entries
+    # still appear in the selected week's table.
+    weekly_averages = pd.Series(
+        0.0,
+        index=list(family.keys()),
+        name="Top 5 Average"
+    )
 
-    if len(week_steps):
+    if len(selected_week_steps):
 
         daily_week = (
-            week_steps
+            selected_week_steps
             .groupby(
                 [
                     "Person",
@@ -749,53 +773,66 @@ elif page == "🏆 Leaderboards":
             .reset_index()
         )
 
-
-        weekly_top5 = (
+        calculated = (
             daily_week
-            .groupby("Person")
-            ["Amount"]
+            .groupby("Person")["Amount"]
             .apply(
-                lambda x:
-                x.nlargest(5).mean()
-            )
-            .sort_values(
-                ascending=False
+                lambda x: x.nlargest(5).mean()
             )
         )
 
+        weekly_averages.update(calculated)
 
-        st.success(
-            f"🥇 Week {week} Champion: "
-            f"{weekly_top5.index[0]}"
+        weekly_averages = weekly_averages.sort_values(
+            ascending=False
         )
 
+        champion = weekly_averages.index[0]
+
+        # Only call someone champion if they actually logged steps.
+        if weekly_averages[champion] > 0:
+            st.success(
+                f"🥇 Week {selected_week} Champion: {champion}"
+            )
 
         st.bar_chart(
-            weekly_top5
+            weekly_averages
         )
 
+        display_averages = weekly_averages.round().astype(int)
 
         st.dataframe(
-            weekly_top5.rename(
-                "Top 5 Average"
-            ),
+            display_averages.rename(
+                "Top 5 Average Steps"
+            ).to_frame(),
             use_container_width=True
         )
 
+        st.caption(
+            "Everyone is shown. The average is based on each person's "
+            "five highest step days during that week."
+        )
 
     else:
 
         st.info(
-            "No data logged this week."
+            f"No step data logged for Week {selected_week} yet."
         )
 
+        st.dataframe(
+            weekly_averages.astype(int).rename(
+                "Top 5 Average Steps"
+            ).to_frame(),
+            use_container_width=True
+        )
 
     st.divider()
 
 
     # -----------------------------
     # Exercise Minutes
-    # -----------------------------
+    # ----------------------------
+
 
     st.subheader(
         "💪 Exercise Minutes"
@@ -1041,7 +1078,7 @@ elif page == "📊 Insights":
 
     days_elapsed = max(
         (
-            pd.Timestamp.today()
+            pd.Timestamp(app_today())
             -
             CHALLENGE_START
         ).days,
